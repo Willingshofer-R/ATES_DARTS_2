@@ -88,6 +88,6 @@ run_DARTS ("case_synthetic_no_obswell_gridext",
                1,
                20, 5,
                Q, daysprofile, storage_periods,
-           set_transition_runtime = 1e-3,
+               set_transition_runtime = 1e-3,
                well_diameter = 1,
                 n_points = 256) #ensure that n-points is correctly inferred in the other scripts

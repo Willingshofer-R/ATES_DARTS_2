@@ -6,12 +6,16 @@ from darts.physics.properties.basic import ConstFunc, PhaseRelPerm
 #from darts.physics.properties.viscosity import MaoDuan2009
 
 from darts.models.darts_model import DartsModel
-from darts.engines import redirect_darts_output, well_control_iface
+from darts.engines import redirect_darts_output, well_control_iface, sim_params
 from darts.physics.properties.eos_properties import EoSEnthalpy
 from darts.physics.properties.flash import SinglePhase
 from darts.reservoirs.struct_reservoir import StructReservoir
 from dartsflash.components import CompData
 from darts.nonlinear_solvers import NewtonSolver, ChopSpec
+from darts.linear_solvers import (
+    CPRSolverSpec,
+    GMRESSolverSpec,
+)
 
 redirect_darts_output('LogFile_Run_HT_ATES_DELFT.log')
 
@@ -57,12 +61,13 @@ class Model(DartsModel):
                  hwx, hwy, well_diameter,
                  depth_to_top, geothermal_grad,
                  ts_mult, ts_max,
-                 n_points=128):
+                 n_points=128, gmres_restart=40):
         # call base class constructor
         super().__init__()
 
         self.timer.node["initialization"].start()
         self.platform = 'cpu'
+        self.gmres_restart = gmres_restart
         # #------------Set Node Number------------
         self.nly_top = int(nly_top)  # layer number in cap rock
         self.nly_res = int(nly_res)  # int(n_ly[1]) # layer number in reservoir rock
@@ -107,25 +112,37 @@ class Model(DartsModel):
         # Pre-defined physics single phase, single component
         self.set_physics_super(zero=1e-12, n_points=n_points, components=["H2O"])
 
-        self.ts_control.dt_first = 1e-12 #days
-        self.ts_control.dt_mult = 4 #days
-        self.ts_control.dt_max = 1 #days
-        self.ts_control.runtime = 5 #days
-
-        # Solver settings
-        super().set_solver() # Check if I need this
-        self.nonlinear_solver.spec.tolerance = 1e-3
-        self.nonlinear_solver.spec.max_iterations = 20
-        self.linear_solver.spec.tolerance = 1e-6
-        self.linear_solver.spec.max_iterations = 50
-
         # Try both below to see which one works
-        self.nonlinear_solver.spec.chop = ChopSpec(mode='global', factor=1.0)
+        # self.nonlinear_solver.spec.chop = ChopSpec(mode='global', factor=1.0)
         #self.nonlinear_solver = NewtonSolver(tolerance=1e-3, max_iterations=20, chop=ChopSpec(mode='global', factor=1.0))
 
         self.timer.node["initialization"].stop()
         # Check if I need it, maybe useful
         self.print_config()
+    
+    def set_solver(self):
+        self.ts_control.dt_first = 1e-12
+        self.ts_control.dt_mult = 4
+        self.ts_control.dt_max = 1
+        self.ts_control.runtime = 5
+
+        self.nonlinear_solver = NewtonSolver(
+            tolerance=1e-3,
+            max_iterations=20,
+            chop=ChopSpec(mode='global', factor=1)
+        )
+
+        self.linear_solver.spec = GMRESSolverSpec(
+            tolerance=1e-6,
+            max_iterations=50,
+            restart=self.gmres_restart,
+            proprietary_linear_type=sim_params.cpu_gmres_cpr_amg,
+            prec=CPRSolverSpec()
+        )
+
+        self.params.linear_type = sim_params.cpu_gmres_cpr_amg
+
+        super().set_solver()
 
     def set_physics_super(self, zero, n_points, components):
         """Physical properties"""
@@ -146,10 +163,6 @@ class Model(DartsModel):
         iapws.init_flash(flash_type=DARTSFlash.FlashType.PTFlash)
 
         property_container.enthalpy_ev = {"L": EoSEnthalpy(eos=iapws.eos["IAPWS"], root_flag=EoS.RootFlag.MIN)}
-
-        ### Before modification
-        # property_container.flash_ev = NegativeFlash2(flash_params)
-        # property_container.flash_ev = SinglePhase(nc=2)
 
         ### Locally defined density & viscosity relations
         property_container.density_ev = {'L': Sharqawy2012()}
@@ -185,11 +198,7 @@ class Model(DartsModel):
             state_spec=PhysicsBase.StateSpecification.PT,
             cache=False
         )
-
-        #self.physics = Compositional(components, phases, self.timer, n_points, min_p=0.01, max_p=50, min_z=zero / 10,
-                                     #max_z=1 - zero / 10, min_t=273.15 + 5, max_t=400, epsilon_z= zero/10,
-                                     #state_spec=Compositional.StateSpecification.PT, cache=False)
-        #self.physics.thermal = thermal
+        
         self.physics.add_property_region(property_container)
         self.physics.init_physics()
 
